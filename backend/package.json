@@ -18,7 +18,7 @@
     "nodejs",
     "express"
   ],
-  "author": "Ping Speed Analyzer",
+  "author": "Murat Sağ",
   "license": "MIT",
   "dependencies": {
     "express": "^4.18.2",
