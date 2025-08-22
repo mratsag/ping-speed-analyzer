@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🚀 Ping Hızı Karşılaştırma</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+   <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 Ping Hızı Karşılaştırma Aracı</h1>
+        
+        <div class="server-status" id="serverStatus">
+            <span>🌐 Backend Durumu:</span>
+            <span id="serverStatusText" class="server-offline">Kontrol ediliyor...</span>
+        </div>
+        
+        <div class="controls">
+            <div class="input-group">
+                <label>🏠 LAN IP Adresi</label>
+                <input type="text" id="lanIp" placeholder="192.168.1.1" value="192.168.1.1">
+                <small>Router veya modem IP'si</small>
+            </div>
+            
+            <div class="input-group">
+                <label>🌐 WAN Adresi</label>
+                <input type="text" id="wanIp" placeholder="8.8.8.8" value="8.8.8.8">
+                <small>Google DNS veya başka site</small>
+            </div>
+            
+            <div class="input-group">
+                <label>📊 Test Sayısı</label>
+                <input type="number" id="testCount" value="10" min="3" max="20">
+                <button onclick="startRealPingTest()">Gerçek Ping Testi</button>
+            </div>
+        </div>
+
+        <div id="status" class="status" style="display: none;"></div>
+
+        <div class="stats-grid">
+            <div class="stat-card lan-stat">
+                <div class="stat-value" id="lanAvg">-</div>
+                <div class="stat-label">🏠 LAN Ortalama (ms)</div>
+            </div>
+            <div class="stat-card wan-stat">
+                <div class="stat-value" id="wanAvg">-</div>
+                <div class="stat-label">🌐 WAN Ortalama (ms)</div>
+            </div>
+            <div class="stat-card avg-stat">
+                <div class="stat-value" id="speedDiff">-</div>
+                <div class="stat-label">⚡ Hız Farkı (kat)</div>
+            </div>
+            <div class="stat-card packet-loss">
+                <div class="stat-value" id="packetLoss">-</div>
+                <div class="stat-label">📦 Paket Kaybı (%)</div>
+            </div>
+        </div>
+
+        <div class="chart-container">
+            <canvas id="pingChart"></canvas>
+        </div>
+
+        <div class="test-history">
+            <h3>📝 Test Geçmişi:</h3>
+            <div id="testLogs"></div>
+        </div>
+
+        <div class="tips">
+            <h3>💡 İpuçları ve Bilgiler</h3>
+            <ul>
+                <li><strong>Gerçek Ping:</strong> Bu araç artık gerçek ping değerleri kullanıyor!</li>
+                <li><strong>LAN Ping:</strong> Yerel ağınızdaki cihazlara ping süresi (genellikle 1-5ms)</li>
+                <li><strong>WAN Ping:</strong> İnternet üzerindeki sunuculara ping süresi (20-100ms+)</li>
+                <li><strong>Backend API:</strong> Node.js sunucusu gerçek ping komutlarını çalıştırıyor</li>
+                <li><strong>Paket Kaybı:</strong> %0 ideal, %5+ üstü problem işareti</li>
+            </ul>
+        </div>
+    </div>
+
+    <script>
+        let chart;
+        let lanPings = [];
+        let wanPings = [];
+        let testLabels = [];
+        const API_BASE = ''; // Same origin olduğu için boş
+
+        // Backend durumunu kontrol et
+        async function checkServerStatus() {
+            try {
+                const response = await fetch('/api/status');
+                const data = await response.json();
+                
+                document.getElementById('serverStatusText').textContent = 
+                    `✅ Online (Uptime: ${Math.floor(data.uptime)}s)`;
+                document.getElementById('serverStatusText').className = 'server-online';
+                
+                addLog(`🚀 Backend bağlantısı başarılı - Node ${data.node}`);
+                return true;
+            } catch (error) {
+                document.getElementById('serverStatusText').textContent = '❌ Offline';
+                document.getElementById('serverStatusText').className = 'server-offline';
+                addLog(`❌ Backend bağlantı hatası: ${error.message}`);
+                return false;
+            }
+        }
+
+        // Gerçek ping API çağrısı
+        async function realPing(host) {
+            try {
+                const response = await fetch(`/api/ping/${encodeURIComponent(host)}`);
+                const data = await response.json();
+                
+                if (!response.ok) {
+                    throw new Error(data.error || 'Ping başarısız');
+                }
+                
+                addLog(`🏓 ${host}: ${data.time}ms (${data.alive ? 'Başarılı' : 'Başarısız'})`);
+                
+                return {
+                    time: data.alive ? data.time : null,
+                    alive: data.alive,
+                    host: data.host
+                };
+            } catch (error) {
+                addLog(`❌ ${host} ping hatası: ${error.message}`);
+                return {
+                    time: null,
+                    alive: false,
+                    host: host,
+                    error: error.message
+                };
+            }
+        }
+
+        // Test loglarını ekle
+        function addLog(message) {
+            const logsContainer = document.getElementById('testLogs');
+            const logElement = document.createElement('div');
+            logElement.className = 'test-log';
+            logElement.textContent = `${new Date().toLocaleTimeString()} - ${message}`;
+            logsContainer.appendChild(logElement);
+            logsContainer.scrollTop = logsContainer.scrollHeight;
+        }
+
+        function initChart() {
+            const ctx = document.getElementById('pingChart').getContext('2d');
+            chart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: '🏠 LAN Ping (ms)',
+                        data: [],
+                        borderColor: '#4ECDC4',
+                        backgroundColor: 'rgba(78, 205, 196, 0.1)',
+                        tension: 0.4,
+                        fill: true
+                    }, {
+                        label: '🌐 WAN Ping (ms)',
+                        data: [],
+                        borderColor: '#FF6B6B',
+                        backgroundColor: 'rgba(255, 107, 107, 0.1)',
+                        tension: 0.4,
+                        fill: true
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: 'Gerçek Ping Süreleri Karşılaştırması',
+                            color: 'white',
+                            font: { size: 18 }
+                        },
+                        legend: {
+                            labels: { color: 'white' }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            grid: { color: 'rgba(255,255,255,0.1)' },
+                            ticks: { color: 'white' }
+                        },
+                        y: {
+                            grid: { color: 'rgba(255,255,255,0.1)' },
+                            ticks: { color: 'white' },
+                            title: {
+                                display: true,
+                                text: 'Ping Süresi (ms)',
+                                color: 'white'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function updateStatus(message, type) {
+            const statusDiv = document.getElementById('status');
+            statusDiv.textContent = message;
+            statusDiv.className = `status ${type}`;
+            statusDiv.style.display = 'block';
+        }
+
+        function updateStats() {
+            if (lanPings.length === 0) return;
+            
+            const lanSuccessful = lanPings.filter(p => p !== null);
+            const wanSuccessful = wanPings.filter(p => p !== null);
+            
+            const lanAvg = lanSuccessful.length > 0 ? 
+                lanSuccessful.reduce((a, b) => a + b, 0) / lanSuccessful.length : 0;
+            const wanAvg = wanSuccessful.length > 0 ? 
+                wanSuccessful.reduce((a, b) => a + b, 0) / wanSuccessful.length : 0;
+            
+            const speedDiff = lanAvg > 0 ? wanAvg / lanAvg : 0;
+            
+            // Paket kaybı hesaplama
+            const totalTests = lanPings.length + wanPings.length;
+            const lostPackets = (lanPings.filter(p => p === null).length + 
+                               wanPings.filter(p => p === null).length);
+            const packetLoss = totalTests > 0 ? (lostPackets / totalTests) * 100 : 0;
+            
+            document.getElementById('lanAvg').textContent = lanAvg > 0 ? lanAvg.toFixed(1) : 'N/A';
+            document.getElementById('wanAvg').textContent = wanAvg > 0 ? wanAvg.toFixed(1) : 'N/A';
+            document.getElementById('speedDiff').textContent = speedDiff > 0 ? speedDiff.toFixed(1) + 'x' : 'N/A';
+            document.getElementById('packetLoss').textContent = packetLoss.toFixed(1);
+        }
+
+        async function startRealPingTest() {
+            const lanIp = document.getElementById('lanIp').value.trim();
+            const wanIp = document.getElementById('wanIp').value.trim();
+            const testCount = parseInt(document.getElementById('testCount').value);
+            
+            if (!lanIp || !wanIp) {
+                updateStatus('Lütfen IP adreslerini girin!', 'error');
+                return;
+            }
+            
+            // Backend durumunu kontrol et
+            const serverOnline = await checkServerStatus();
+            if (!serverOnline) {
+                updateStatus('❌ Backend sunucusu çalışmıyor! Lütfen sunucuyu başlatın.', 'error');
+                return;
+            }
+            
+            // Reset data
+            lanPings = [];
+            wanPings = [];
+            testLabels = [];
+            
+            const button = document.querySelector('button');
+            button.disabled = true;
+            button.innerHTML = 'Gerçek Ping Testi Çalışıyor... <span class="ping-animation"></span>';
+            
+            updateStatus(`🚀 Gerçek ping testleri başlıyor... ${testCount} test yapılacak`, 'testing');
+            addLog(`🎯 Test başlıyor: LAN=${lanIp}, WAN=${wanIp}, Count=${testCount}`);
+            
+            for (let i = 1; i <= testCount; i++) {
+                updateStatus(`Test ${i}/${testCount} çalışıyor... (Gerçek ping)`, 'testing');
+                
+                // Paralel ping testleri (gerçek API)
+                const [lanResult, wanResult] = await Promise.all([
+                    realPing(lanIp),
+                    realPing(wanIp)
+                ]);
+                
+                lanPings.push(lanResult.time);
+                wanPings.push(wanResult.time);
+                testLabels.push(`Test ${i}`);
+                
+                // Grafik güncelle - null değerleri 0 olarak göster
+                const lanDisplayValue = lanResult.time !== null ? lanResult.time : 0;
+                const wanDisplayValue = wanResult.time !== null ? wanResult.time : 0;
+                
+                chart.data.labels = [...testLabels];
+                chart.data.datasets[0].data = lanPings.map(p => p !== null ? p : 0);
+                chart.data.datasets[1].data = wanPings.map(p => p !== null ? p : 0);
+                chart.update('none');
+                
+                // İstatistikleri güncelle
+                updateStats();
+                
+                // Küçük bekleme (network'ü bombalamasın)
+                await new Promise(resolve => setTimeout(resolve, 300));
+            }
+            
+            button.disabled = false;
+            button.textContent = 'Gerçek Ping Testi';
+            
+            const successfulTests = lanPings.filter(p => p !== null).length + 
+                                  wanPings.filter(p => p !== null).length;
+            const totalPossible = testCount * 2;
+            
+            updateStatus(`✅ Gerçek ping testi tamamlandı! ${successfulTests}/${totalPossible} başarılı ping.`, 'success');
+            addLog(`🎉 Test tamamlandı! Başarı oranı: ${((successfulTests/totalPossible)*100).toFixed(1)}%`);
+        }
+
+        // Sayfa yüklendiğinde
+        window.onload = async function() {
+            initChart();
+            addLog('🌟 Ping Karşılaştırma Aracı başlatıldı');
+            
+            // Backend durumunu kontrol et
+            await checkServerStatus();
+            
+            setTimeout(() => {
+                updateStatus('✅ Hazır! IP adreslerini kontrol edip "Gerçek Ping Testi" butonuna tıklayın.', 'success');
+            }, 1000);
+        };
+    </script>
+</body>
+</html>
